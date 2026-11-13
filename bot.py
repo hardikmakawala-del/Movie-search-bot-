@@ -1,11 +1,16 @@
 import os
 import re
 import logging
+import asyncio
+from contextlib import contextmanager
 from urllib.parse import urlparse
 
-import psycopg2
+from psycopg2.pool import ThreadedConnectionPool
 from psycopg2.extras import RealDictCursor
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import (
+    Update, ReplyKeyboardMarkup, KeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton,
+)
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     ContextTypes, filters,
@@ -23,15 +28,54 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 RENDER_EXTERNAL_URL = os.environ["RENDER_EXTERNAL_URL"].rstrip("/")
 PORT = int(os.environ.get("PORT", "10000"))
 WEBHOOK_PATH = os.environ["WEBHOOK_PATH"].strip("/")
-WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
+WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"].strip()
+LOG_CHANNEL_ID = os.environ.get("LOG_CHANNEL_ID", "").strip()
 
-GENRES = ["Action", "Comedy", "Drama", "Horror", "Romance", "Thriller", "Sci-Fi", "Animation", "Adventure", "Crime"]
-LANGUAGES = ["Hindi", "Gujarati", "English", "Tamil", "Telugu", "Malayalam", "Kannada", "Bengali", "Korean", "Japanese", "Other"]
+GENRES = [
+    "Action", "Comedy", "Drama", "Horror", "Romance",
+    "Thriller", "Sci-Fi", "Animation", "Adventure", "Crime",
+]
+LANGUAGES = [
+    "Hindi", "Gujarati", "English", "Tamil", "Telugu",
+    "Malayalam", "Kannada", "Bengali", "Korean", "Japanese", "Other",
+]
 
-def db_connection():
-    # Render may provide postgres://; psycopg2 accepts postgresql://.
+DB_POOL = None
+
+QUALITY_PATTERNS = {
+    "download_480": re.compile(r"\b480\s*p\b\s*[:\-]\s*(https?://\S+)", re.I),
+    "download_720": re.compile(r"\b720\s*p\b\s*[:\-]\s*(https?://\S+)", re.I),
+    "download_1080": re.compile(r"\b1080\s*p\b\s*[:\-]\s*(https?://\S+)", re.I),
+}
+YEAR_RE = re.compile(r"\b(18[8-9]\d|19\d{2}|20\d{2}|2100)\b")
+LANGUAGE_TAGS = {
+    "hindi": "Hindi", "gujarati": "Gujarati", "english": "English",
+    "tamil": "Tamil", "telugu": "Telugu", "telegu": "Telugu",
+    "malayalam": "Malayalam", "kannada": "Kannada", "kan": "Kannada",
+    "bengali": "Bengali", "korean": "Korean", "japanese": "Japanese",
+}
+
+
+def init_pool():
+    global DB_POOL
     dsn = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-    return psycopg2.connect(dsn, cursor_factory=RealDictCursor)
+    DB_POOL = ThreadedConnectionPool(1, 8, dsn, cursor_factory=RealDictCursor)
+
+
+@contextmanager
+def db_connection():
+    if DB_POOL is None:
+        raise RuntimeError("Database pool has not been initialized")
+    conn = DB_POOL.getconn()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        DB_POOL.putconn(conn)
+
 
 def init_db():
     with db_connection() as conn:
@@ -49,12 +93,18 @@ def init_db():
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
-            # Add quality-specific links safely to existing databases.
             cur.execute("ALTER TABLE movies ADD COLUMN IF NOT EXISTS download_480 TEXT NOT NULL DEFAULT ''")
             cur.execute("ALTER TABLE movies ADD COLUMN IF NOT EXISTS download_720 TEXT NOT NULL DEFAULT ''")
             cur.execute("ALTER TABLE movies ADD COLUMN IF NOT EXISTS download_1080 TEXT NOT NULL DEFAULT ''")
-            cur.execute("CREATE INDEX IF NOT EXISTS movies_title_idx ON movies USING GIN (to_tsvector('simple', title))")
-        conn.commit()
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS movies_title_idx
+                ON movies USING GIN (to_tsvector('simple', title))
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS movies_created_at_idx
+                ON movies (created_at DESC)
+            """)
+
 
 def home_keyboard():
     return ReplyKeyboardMarkup(
@@ -66,27 +116,30 @@ def home_keyboard():
         resize_keyboard=True,
     )
 
+
 def list_keyboard(values, prefix):
     rows = []
     for i in range(0, len(values), 2):
         rows.append([
             InlineKeyboardButton(v, callback_data=f"{prefix}:{v}")
-            for v in values[i:i+2]
+            for v in values[i:i + 2]
         ])
     return InlineKeyboardMarkup(rows)
 
-def find_movies(search_text=None, field=None, value=None, limit=8):
+
+def find_movies_db(search_text=None, field=None, value=None, limit=8):
     with db_connection() as conn:
         with conn.cursor() as cur:
             if search_text:
-                pattern = f"%{search_text.strip()}%"
+                term = search_text.strip()
+                pattern = f"%{term}%"
                 cur.execute("""
                     SELECT * FROM movies
-                    WHERE title ILIKE %s OR language ILIKE %s
-                       OR genres ILIKE %s OR COALESCE(description, '') ILIKE %s
+                    WHERE title ILIKE %s
+                       OR to_tsvector('simple', title) @@ plainto_tsquery('simple', %s)
                     ORDER BY year DESC NULLS LAST, title
                     LIMIT %s
-                """, (pattern, pattern, pattern, pattern, limit))
+                """, (pattern, term, limit))
             elif field == "genre":
                 cur.execute("""
                     SELECT * FROM movies
@@ -107,65 +160,172 @@ def find_movies(search_text=None, field=None, value=None, limit=8):
                 """, (limit,))
             return cur.fetchall()
 
+
+def parse_movie_post(caption):
+    """Read a simple movie-post caption and extract title/year/language/quality URLs."""
+    lines = [line.strip() for line in (caption or "").splitlines() if line.strip()]
+    if not lines:
+        return None
+
+    title = ""
+    for line in lines:
+        # Skip decorative separators and link/metadata-only lines.
+        if re.fullmatch(r"[\W_]+", line, flags=re.UNICODE):
+            continue
+        if re.search(r"\b(480|720|1080)\s*p\b\s*:", line, re.I):
+            continue
+        if YEAR_RE.search(line) and len(line) < 16 and not re.search(r"[A-Za-z]{3}", line):
+            continue
+        cleaned = re.sub(r"^[^\w]+", "", line, flags=re.UNICODE).strip()
+        cleaned = re.sub(r"[*_`]", "", cleaned).strip()
+        if cleaned and not cleaned.startswith("#"):
+            title = cleaned
+            break
+
+    if not title:
+        return None
+
+    year_match = YEAR_RE.search(caption or "")
+    year = int(year_match.group(1)) if year_match else None
+
+    language = "Other"
+    tags = re.findall(r"#([A-Za-z]+)", caption or "")
+    for tag in tags:
+        if tag.lower() in LANGUAGE_TAGS:
+            language = LANGUAGE_TAGS[tag.lower()]
+            break
+
+    links = {}
+    for field, pattern in QUALITY_PATTERNS.items():
+        match = pattern.search(caption or "")
+        if match:
+            url = match.group(1).rstrip(".,;)]}>")
+            if urlparse(url).scheme in ("http", "https"):
+                links[field] = url
+
+    # Keep useful caption text, but remove the title, separators and quality-link lines.
+    description_lines = []
+    for line in lines:
+        if line == lines[0] or re.fullmatch(r"[\W_]+", line, flags=re.UNICODE):
+            continue
+        if re.search(r"\b(480|720|1080)\s*p\b\s*:", line, re.I):
+            continue
+        if YEAR_RE.fullmatch(re.sub(r"^[^\d]*|[^\d]*$", "", line)):
+            continue
+        if line.startswith("⊰") or line.startswith("⏬"):
+            continue
+        description_lines.append(line)
+
+    description = "\n".join(description_lines).strip()
+    return {
+        "title": title[:250],
+        "year": year,
+        "language": language,
+        "genres": "",
+        "description": description[:2000],
+        "links": links,
+    }
+
+
+def save_channel_movie_db(title, year, language, genres, description, poster_id, links):
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id FROM movies
+                WHERE LOWER(title) = LOWER(%s)
+                  AND year IS NOT DISTINCT FROM %s
+                ORDER BY id DESC LIMIT 1
+            """, (title, year))
+            existing = cur.fetchone()
+
+            if existing:
+                cur.execute("""
+                    UPDATE movies SET
+                        language = %s,
+                        genres = %s,
+                        description = %s,
+                        poster_url = CASE WHEN %s <> '' THEN %s ELSE poster_url END,
+                        download_480 = CASE WHEN %s <> '' THEN %s ELSE download_480 END,
+                        download_720 = CASE WHEN %s <> '' THEN %s ELSE download_720 END,
+                        download_1080 = CASE WHEN %s <> '' THEN %s ELSE download_1080 END
+                    WHERE id = %s
+                """, (
+                    language, genres, description,
+                    poster_id, poster_id,
+                    links.get("download_480", ""), links.get("download_480", ""),
+                    links.get("download_720", ""), links.get("download_720", ""),
+                    links.get("download_1080", ""), links.get("download_1080", ""),
+                    existing["id"],
+                ))
+                return existing["id"], False
+
+            cur.execute("""
+                INSERT INTO movies (
+                    title, year, language, genres, description, poster_url,
+                    download_480, download_720, download_1080
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (
+                title, year, language, genres, description, poster_id,
+                links.get("download_480", ""),
+                links.get("download_720", ""),
+                links.get("download_1080", ""),
+            ))
+            return cur.fetchone()["id"], True
+
+
 def format_movie(movie):
     year = movie["year"] if movie["year"] else "N/A"
     genres = movie["genres"] or "Not specified"
-    description = movie["description"] or "No description added."
+    description = (movie["description"] or "No description added.")[:650]
     text = (
         f"🎬 *{movie['title']}* ({year})\n"
         f"🌍 Language: {movie['language']}\n"
-        f"🎭 Genre: {genres}\n\n"
-        f"{description}"
+        f"🎭 Genre: {genres}\n\n{description}"
     )
     if movie["official_url"]:
-        text += f"\n\n🔗 [Official / legal page]({movie['official_url']})"
-    return text
+        text += f"\n\n🔗 [Official page]({movie['official_url']})"
+    return text[:1000]
+
 
 def download_keyboard(movie):
     buttons = []
-    for label, field in (("480p Download", "download_480"), ("720p Download", "download_720"), ("1080p Download", "download_1080")):
+    for label, field in (
+        ("480p Download", "download_480"),
+        ("720p Download", "download_720"),
+        ("1080p Download", "download_1080"),
+    ):
         url = movie.get(field) or ""
-        if url:
+        if url and urlparse(url).scheme in ("http", "https"):
             buttons.append([InlineKeyboardButton(label, url=url)])
     return InlineKeyboardMarkup(buttons) if buttons else None
 
-async def show_movies(update_or_query, movies):
+
+async def show_movies(message, movies):
     if not movies:
-        msg = "આ શોધ માટે કોઈ ફિલ્મ મળી નથી. બીજી રીતે શોધી જુઓ."
-        if hasattr(update_or_query, "message") and update_or_query.message:
-            await update_or_query.message.reply_text(msg)
-        else:
-            await update_or_query.edit_message_text(msg)
+        await message.reply_text("આ શોધ માટે કોઈ ફિલ્મ મળી નથી. બીજી રીતે શોધી જુઓ.")
         return
 
     for movie in movies:
         text = format_movie(movie)
-        if movie["poster_url"]:
+        markup = download_keyboard(movie)
+        poster = movie.get("poster_url") or ""
+        if poster:
             try:
-                if hasattr(update_or_query, "message") and update_or_query.message:
-                    await update_or_query.message.reply_photo(
-                        photo=movie["poster_url"], caption=text, parse_mode="Markdown",
-                        reply_markup=download_keyboard(movie)
-                    )
-                else:
-                    await update_or_query.message.reply_photo(
-                        photo=movie["poster_url"], caption=text, parse_mode="Markdown",
-                        reply_markup=download_keyboard(movie)
-                    )
+                await message.reply_photo(
+                    photo=poster, caption=text, parse_mode="Markdown",
+                    reply_markup=markup,
+                )
                 continue
             except Exception:
                 log.exception("Could not send poster for movie id=%s", movie["id"])
 
-        if hasattr(update_or_query, "message") and update_or_query.message:
-            await update_or_query.message.reply_text(
-                text, parse_mode="Markdown", disable_web_page_preview=True,
-                reply_markup=download_keyboard(movie)
-            )
-        else:
-            await update_or_query.message.reply_text(
-                text, parse_mode="Markdown", disable_web_page_preview=True,
-                reply_markup=download_keyboard(movie)
-            )
+        await message.reply_text(
+            text, parse_mode="Markdown", disable_web_page_preview=True,
+            reply_markup=markup,
+        )
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -175,6 +335,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=home_keyboard(),
     )
 
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "ઉપયોગ:\n"
@@ -183,9 +344,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Browse languages: ભાષા પસંદ કરો\n"
         "• Latest movies: તાજેતરમાં ઉમેરેલી ફિલ્મો\n\n"
         "Admin માટે /addmovie command ઉપલબ્ધ છે.\n"
-        "Download quality links (authorized links only) પણ ઉમેરાઈ શકે છે.",
+        "Log Channel માં નવી authorized movie post આવશે તો bot આપમેળે import કરશે.",
         reply_markup=home_keyboard(),
     )
+
 
 async def add_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ADMIN_ID == 0 or update.effective_user.id != ADMIN_ID:
@@ -196,13 +358,11 @@ async def add_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = [p.strip() for p in raw.split("|")]
     if len(parts) != 10:
         await update.message.reply_text(
-            "Format:\n/addmovie Title|Year|Language|Genre1,Genre2|Description|PosterURL|OfficialURL|480pURL|720pURL|1080pURL\n\n"
-            "Example (use only links you are authorized to share):\n"
-            "/addmovie Sample Film|2024|English|Drama,Thriller|A sample description||https://example.com/info|https://example.com/480|https://example.com/720|https://example.com/1080"
+            "Format:\n/addmovie Title|Year|Language|Genre1,Genre2|Description|PosterURL|OfficialURL|480pURL|720pURL|1080pURL"
         )
         return
 
-    title, year_text, language, genres, description, poster_url, official_url, download_480, download_720, download_1080 = parts
+    title, year_text, language, genres, description, poster_url, official_url, d480, d720, d1080 = parts
     try:
         year = int(year_text) if year_text else None
         if year and not (1888 <= year <= 2100):
@@ -211,22 +371,24 @@ async def add_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Year ખોટું છે. ઉદાહરણ: 2024")
         return
 
-    for url in (poster_url, official_url, download_480, download_720, download_1080):
+    for url in (poster_url, official_url, d480, d720, d1080):
         if url and urlparse(url).scheme not in ("http", "https"):
             await update.message.reply_text("URL http:// અથવા https:// થી શરૂ થવો જોઈએ.")
             return
 
-    with db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO movies (title, year, language, genres, description, poster_url, official_url,
-                                    download_480, download_720, download_1080)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (title, year, language, genres, description, poster_url, official_url,
-                  download_480, download_720, download_1080))
-        conn.commit()
+    def insert():
+        with db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO movies (
+                        title, year, language, genres, description, poster_url, official_url,
+                        download_480, download_720, download_1080
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (title, year, language, genres, description, poster_url, official_url, d480, d720, d1080))
 
+    await asyncio.to_thread(insert)
     await update.message.reply_text(f"✅ '{title}' database માં ઉમેરાઈ ગઈ.")
+
 
 async def delete_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ADMIN_ID == 0 or update.effective_user.id != ADMIN_ID:
@@ -236,17 +398,67 @@ async def delete_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not raw.isdigit():
         await update.message.reply_text("ઉપયોગ: /deletemovie MOVIE_ID")
         return
-    with db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM movies WHERE id = %s RETURNING title", (int(raw),))
-            row = cur.fetchone()
-        conn.commit()
+
+    def delete():
+        with db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM movies WHERE id = %s RETURNING title", (int(raw),))
+                return cur.fetchone()
+
+    row = await asyncio.to_thread(delete)
     await update.message.reply_text(
         f"🗑️ Deleted: {row['title']}" if row else "આ ID ની ફિલ્મ મળી નથી."
     )
 
+
+async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.effective_message
+    chat = update.effective_chat
+
+    if not message or not chat:
+        return
+
+    # Only import from the channel ID configured in Render.
+    if not LOG_CHANNEL_ID:
+        log.warning("LOG_CHANNEL_ID is not configured; channel post ignored.")
+        return
+    if str(chat.id) != LOG_CHANNEL_ID and (chat.username or "").lower() != LOG_CHANNEL_ID.lstrip("@").lower():
+        return
+
+    caption = message.caption or message.text or ""
+    parsed = parse_movie_post(caption)
+    if not parsed:
+        log.info("Channel post ignored: could not identify a movie title.")
+        return
+
+    poster_id = message.photo[-1].file_id if message.photo else ""
+    try:
+        movie_id, created = await asyncio.to_thread(
+            save_channel_movie_db,
+            parsed["title"], parsed["year"], parsed["language"],
+            parsed["genres"], parsed["description"], poster_id, parsed["links"],
+        )
+        log.info(
+            "%s channel movie: %s (id=%s)",
+            "Imported" if created else "Updated", parsed["title"], movie_id,
+        )
+        # Optional admin confirmation; no public channel reply is sent.
+        if ADMIN_ID:
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=f"✅ {'Imported' if created else 'Updated'}: {parsed['title']}\n"
+                         f"Poster: {'yes' if poster_id else 'no'} | "
+                         f"Links: {len(parsed['links'])}",
+                )
+            except Exception:
+                log.exception("Could not send import confirmation to admin")
+    except Exception:
+        log.exception("Failed to import channel post")
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
+    text = (update.message.text or "").strip()
     if text == "🔎 Search movie":
         context.user_data["mode"] = "search"
         await update.message.reply_text("ફિલ્મનું નામ લખો:")
@@ -255,33 +467,45 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "🌍 Browse languages":
         await update.message.reply_text("Language પસંદ કરો:", reply_markup=list_keyboard(LANGUAGES, "language"))
     elif text == "🆕 Latest movies":
-        await show_movies(update, find_movies())
+        movies = await asyncio.to_thread(find_movies_db)
+        await show_movies(update.message, movies)
     elif text == "ℹ️ Help":
         await help_command(update, context)
     else:
-        await show_movies(update, find_movies(search_text=text))
+        movies = await asyncio.to_thread(find_movies_db, text)
+        await show_movies(update.message, movies)
+
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     kind, value = query.data.split(":", 1)
     if kind == "genre":
-        movies = find_movies(field="genre", value=value)
+        movies = await asyncio.to_thread(find_movies_db, None, "genre", value)
         await query.message.reply_text(f"🎭 Genre: {value}")
-        await show_movies(query, movies)
+        await show_movies(query.message, movies)
     elif kind == "language":
-        movies = find_movies(field="language", value=value)
+        movies = await asyncio.to_thread(find_movies_db, None, "language", value)
         await query.message.reply_text(f"🌍 Language: {value}")
-        await show_movies(query, movies)
+        await show_movies(query.message, movies)
+
 
 def main():
+    init_pool()
     init_db()
-    app = Application.builder().token(BOT_TOKEN).build()
+
+    if not LOG_CHANNEL_ID:
+        log.warning("Set LOG_CHANNEL_ID in Render to enable automatic channel imports.")
+
+    app = Application.builder().token(BOT_TOKEN).concurrent_updates(8).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("addmovie", add_movie))
     app.add_handler(CommandHandler("deletemovie", delete_movie))
     app.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(genre|language):"))
+
+    # Channel posts must be handled before ordinary text messages.
+    app.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     webhook_url = f"{RENDER_EXTERNAL_URL}/{WEBHOOK_PATH}"
@@ -295,6 +519,7 @@ def main():
         allowed_updates=Update.ALL_TYPES,
         bootstrap_retries=-1,
     )
+
 
 if __name__ == "__main__":
     main()
