@@ -49,6 +49,10 @@ def init_db():
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
+            # Add quality-specific links safely to existing databases.
+            cur.execute("ALTER TABLE movies ADD COLUMN IF NOT EXISTS download_480 TEXT NOT NULL DEFAULT ''")
+            cur.execute("ALTER TABLE movies ADD COLUMN IF NOT EXISTS download_720 TEXT NOT NULL DEFAULT ''")
+            cur.execute("ALTER TABLE movies ADD COLUMN IF NOT EXISTS download_1080 TEXT NOT NULL DEFAULT ''")
             cur.execute("CREATE INDEX IF NOT EXISTS movies_title_idx ON movies USING GIN (to_tsvector('simple', title))")
         conn.commit()
 
@@ -117,6 +121,14 @@ def format_movie(movie):
         text += f"\n\n🔗 [Official / legal page]({movie['official_url']})"
     return text
 
+def download_keyboard(movie):
+    buttons = []
+    for label, field in (("480p Download", "download_480"), ("720p Download", "download_720"), ("1080p Download", "download_1080")):
+        url = movie.get(field) or ""
+        if url:
+            buttons.append([InlineKeyboardButton(label, url=url)])
+    return InlineKeyboardMarkup(buttons) if buttons else None
+
 async def show_movies(update_or_query, movies):
     if not movies:
         msg = "આ શોધ માટે કોઈ ફિલ્મ મળી નથી. બીજી રીતે શોધી જુઓ."
@@ -132,20 +144,28 @@ async def show_movies(update_or_query, movies):
             try:
                 if hasattr(update_or_query, "message") and update_or_query.message:
                     await update_or_query.message.reply_photo(
-                        photo=movie["poster_url"], caption=text, parse_mode="Markdown"
+                        photo=movie["poster_url"], caption=text, parse_mode="Markdown",
+                        reply_markup=download_keyboard(movie)
                     )
                 else:
                     await update_or_query.message.reply_photo(
-                        photo=movie["poster_url"], caption=text, parse_mode="Markdown"
+                        photo=movie["poster_url"], caption=text, parse_mode="Markdown",
+                        reply_markup=download_keyboard(movie)
                     )
                 continue
             except Exception:
                 log.exception("Could not send poster for movie id=%s", movie["id"])
 
         if hasattr(update_or_query, "message") and update_or_query.message:
-            await update_or_query.message.reply_text(text, parse_mode="Markdown", disable_web_page_preview=True)
+            await update_or_query.message.reply_text(
+                text, parse_mode="Markdown", disable_web_page_preview=True,
+                reply_markup=download_keyboard(movie)
+            )
         else:
-            await update_or_query.message.reply_text(text, parse_mode="Markdown", disable_web_page_preview=True)
+            await update_or_query.message.reply_text(
+                text, parse_mode="Markdown", disable_web_page_preview=True,
+                reply_markup=download_keyboard(movie)
+            )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -162,7 +182,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Browse genres: genre પસંદ કરો\n"
         "• Browse languages: ભાષા પસંદ કરો\n"
         "• Latest movies: તાજેતરમાં ઉમેરેલી ફિલ્મો\n\n"
-        "Admin માટે /addmovie command ઉપલબ્ધ છે.",
+        "Admin માટે /addmovie command ઉપલબ્ધ છે.\n"
+        "Download quality links (authorized links only) પણ ઉમેરાઈ શકે છે.",
         reply_markup=home_keyboard(),
     )
 
@@ -173,14 +194,15 @@ async def add_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     raw = update.message.text.partition(" ")[2].strip()
     parts = [p.strip() for p in raw.split("|")]
-    if len(parts) != 7:
+    if len(parts) != 10:
         await update.message.reply_text(
-            "Format:\n/addmovie Title|Year|Language|Genre1,Genre2|Description|PosterURL|OfficialURL\n\n"
-            "Example:\n/addmovie Sample Film|2024|English|Drama,Thriller|A sample description||https://example.com"
+            "Format:\n/addmovie Title|Year|Language|Genre1,Genre2|Description|PosterURL|OfficialURL|480pURL|720pURL|1080pURL\n\n"
+            "Example (use only links you are authorized to share):\n"
+            "/addmovie Sample Film|2024|English|Drama,Thriller|A sample description||https://example.com/info|https://example.com/480|https://example.com/720|https://example.com/1080"
         )
         return
 
-    title, year_text, language, genres, description, poster_url, official_url = parts
+    title, year_text, language, genres, description, poster_url, official_url, download_480, download_720, download_1080 = parts
     try:
         year = int(year_text) if year_text else None
         if year and not (1888 <= year <= 2100):
@@ -189,7 +211,7 @@ async def add_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Year ખોટું છે. ઉદાહરણ: 2024")
         return
 
-    for url in (poster_url, official_url):
+    for url in (poster_url, official_url, download_480, download_720, download_1080):
         if url and urlparse(url).scheme not in ("http", "https"):
             await update.message.reply_text("URL http:// અથવા https:// થી શરૂ થવો જોઈએ.")
             return
@@ -197,9 +219,11 @@ async def add_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO movies (title, year, language, genres, description, poster_url, official_url)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """, (title, year, language, genres, description, poster_url, official_url))
+                INSERT INTO movies (title, year, language, genres, description, poster_url, official_url,
+                                    download_480, download_720, download_1080)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (title, year, language, genres, description, poster_url, official_url,
+                  download_480, download_720, download_1080))
         conn.commit()
 
     await update.message.reply_text(f"✅ '{title}' database માં ઉમેરાઈ ગઈ.")
@@ -274,3 +298,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+            
