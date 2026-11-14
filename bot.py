@@ -43,9 +43,9 @@ LANGUAGES = [
 DB_POOL = None
 
 QUALITY_PATTERNS = {
-    "download_480": re.compile(r"\b480\s*p\b\s*[:\-]\s*(https?://\S+)", re.I),
-    "download_720": re.compile(r"\b720\s*p\b\s*[:\-]\s*(https?://\S+)", re.I),
-    "download_1080": re.compile(r"\b1080\s*p\b\s*[:\-]\s*(https?://\S+)", re.I),
+    "download_480": re.compile(r"\b480\sp\b\s[:-]\s*(https?://\S+)", re.I),
+    "download_720": re.compile(r"\b720\sp\b\s[:-]\s*(https?://\S+)", re.I),
+    "download_1080": re.compile(r"\b1080\sp\b\s[:-]\s*(https?://\S+)", re.I),
 }
 YEAR_RE = re.compile(r"\b(18[8-9]\d|19\d{2}|20\d{2}|2100)\b")
 LANGUAGE_TAGS = {
@@ -55,12 +55,10 @@ LANGUAGE_TAGS = {
     "bengali": "Bengali", "korean": "Korean", "japanese": "Japanese",
 }
 
-
 def init_pool():
     global DB_POOL
     dsn = DATABASE_URL.replace("postgres://", "postgresql://", 1)
     DB_POOL = ThreadedConnectionPool(1, 8, dsn, cursor_factory=RealDictCursor)
-
 
 @contextmanager
 def db_connection():
@@ -75,7 +73,6 @@ def db_connection():
         raise
     finally:
         DB_POOL.putconn(conn)
-
 
 def init_db():
     with db_connection() as conn:
@@ -105,7 +102,6 @@ def init_db():
                 ON movies (created_at DESC)
             """)
 
-
 def home_keyboard():
     return ReplyKeyboardMarkup(
         [
@@ -116,7 +112,6 @@ def home_keyboard():
         resize_keyboard=True,
     )
 
-
 def list_keyboard(values, prefix):
     rows = []
     for i in range(0, len(values), 2):
@@ -125,7 +120,6 @@ def list_keyboard(values, prefix):
             for v in values[i:i + 2]
         ])
     return InlineKeyboardMarkup(rows)
-
 
 def find_movies_db(search_text=None, field=None, value=None, limit=8):
     with db_connection() as conn:
@@ -136,7 +130,7 @@ def find_movies_db(search_text=None, field=None, value=None, limit=8):
                 cur.execute("""
                     SELECT * FROM movies
                     WHERE title ILIKE %s
-                       OR to_tsvector('simple', title) @@ plainto_tsquery('simple', %s)
+                    OR to_tsvector('simple', title) @@ plainto_tsquery('simple', %s)
                     ORDER BY year DESC NULLS LAST, title
                     LIMIT %s
                 """, (pattern, term, limit))
@@ -160,9 +154,7 @@ def find_movies_db(search_text=None, field=None, value=None, limit=8):
                 """, (limit,))
             return cur.fetchall()
 
-
 def parse_movie_post(caption):
-    """Read a simple movie-post caption and extract title/year/language/quality URLs."""
     lines = [line.strip() for line in (caption or "").splitlines() if line.strip()]
     if not lines:
         return None
@@ -224,14 +216,13 @@ def parse_movie_post(caption):
         "links": links,
     }
 
-
 def save_channel_movie_db(title, year, language, genres, description, poster_id, links):
     with db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT id FROM movies
                 WHERE LOWER(title) = LOWER(%s)
-                  AND year IS NOT DISTINCT FROM %s
+                AND year IS NOT DISTINCT FROM %s
                 ORDER BY id DESC LIMIT 1
             """, (title, year))
             existing = cur.fetchone()
@@ -272,8 +263,6 @@ def save_channel_movie_db(title, year, language, genres, description, poster_id,
             ))
             return cur.fetchone()["id"], True
 
-
-# Markdown formatting is intentionally disabled to prevent Telegram entity parsing errors.
 def format_movie(movie):
     year = movie["year"] if movie["year"] else "N/A"
     genres = movie["genres"] or "Not specified"
@@ -289,7 +278,6 @@ def format_movie(movie):
         text += f"\n\n🔗 Official page: {movie['official_url']}"
     return text[:1000]
 
-
 def download_keyboard(movie):
     buttons = []
     for label, field in (
@@ -301,7 +289,6 @@ def download_keyboard(movie):
         if url and urlparse(url).scheme in ("http", "https"):
             buttons.append([InlineKeyboardButton(label, url=url)])
     return InlineKeyboardMarkup(buttons) if buttons else None
-
 
 async def show_movies(message, movies):
     if not movies:
@@ -329,7 +316,6 @@ async def show_movies(message, movies):
             reply_markup=markup,
         )
 
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text(
@@ -337,7 +323,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "ફિલ્મનું નામ શોધો અથવા Genre / Language પ્રમાણે browse કરો.",
         reply_markup=home_keyboard(),
     )
-
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -350,7 +335,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Log Channel માં નવી authorized movie post આવશે તો bot આપમેળે import કરશે.",
         reply_markup=home_keyboard(),
     )
-
 
 async def add_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ADMIN_ID == 0 or update.effective_user.id != ADMIN_ID:
@@ -392,7 +376,6 @@ async def add_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await asyncio.to_thread(insert)
     await update.message.reply_text(f"✅ '{title}' database માં ઉમેરાઈ ગઈ.")
 
-
 async def delete_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ADMIN_ID == 0 or update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("આ command ફક્ત bot admin માટે છે.")
@@ -412,7 +395,6 @@ async def delete_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🗑️ Deleted: {row['title']}" if row else "આ ID ની ફિલ્મ મળી નથી."
     )
-
 
 async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
@@ -457,7 +439,6 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception:
         log.exception("Failed to import channel post")
 
-
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     if text == "🔎 Search movie":
@@ -476,7 +457,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         movies = await asyncio.to_thread(find_movies_db, text)
         await show_movies(update.message, movies)
 
-
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -489,7 +469,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         movies = await asyncio.to_thread(find_movies_db, None, "language", value)
         await query.message.reply_text(f"🌍 Language: {value}")
         await show_movies(query.message, movies)
-
 
 def main():
     init_pool()
@@ -504,7 +483,7 @@ def main():
     app.add_handler(CommandHandler("addmovie", add_movie))
     app.add_handler(CommandHandler("deletemovie", delete_movie))
     app.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(genre|language):"))
-    app.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
+    app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, handle_channel_post))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     webhook_url = f"{RENDER_EXTERNAL_URL}/{WEBHOOK_PATH}"
@@ -519,7 +498,6 @@ def main():
         bootstrap_retries=-1,
     )
 
-
 if __name__ == "__main__":
     main()
-    
+                        
