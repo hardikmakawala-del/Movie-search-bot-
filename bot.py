@@ -155,7 +155,6 @@ def find_movies_db(search_text=None, field=None, value=None, limit=8):
             return cur.fetchall()
 
 def parse_movie_post(caption, reply_markup=None):
-    """Read a movie-post caption and extract title/year/language/quality URLs from text or buttons."""
     lines = [line.strip() for line in (caption or "").splitlines() if line.strip()]
     if not lines:
         return None
@@ -452,11 +451,6 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
                     text=f"✅ {'Imported' if created else 'Updated'}: {parsed['title']}\n"
                          f"Poster: {'yes' if poster_id else 'no'} | "
                          f"Links: {len(parsed['links'])}",
-                    reply_markup=download_keyboard({
-                        "download_480": parsed["links"].get("download_480", ""),
-                        "download_720": parsed["links"].get("download_720", ""),
-                        "download_1080": parsed["links"].get("download_1080", ""),
-                    })
                 )
             except Exception:
                 log.exception("Could not send import confirmation to admin")
@@ -504,4 +498,11 @@ def main():
     app = Application.builder().token(BOT_TOKEN).concurrent_updates(8).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("addmovie", add_m
+    app.add_handler(CommandHandler("addmovie", add_movie))
+    app.add_handler(CommandHandler("deletemovie", delete_movie))
+    app.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(genre|language):"))
+    app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, handle_channel_post))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    webhook_url = f"{RENDER_EXTERNAL_URL}/{WEBHOOK_PATH}"
+    log.info("Starting webhook a
