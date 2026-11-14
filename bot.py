@@ -169,7 +169,6 @@ def parse_movie_post(caption):
 
     title = ""
     for line in lines:
-        # Skip decorative separators and link/metadata-only lines.
         if re.fullmatch(r"[\W_]+", line, flags=re.UNICODE):
             continue
         if re.search(r"\b(480|720|1080)\s*p\b\s*:", line, re.I):
@@ -203,7 +202,6 @@ def parse_movie_post(caption):
             if urlparse(url).scheme in ("http", "https"):
                 links[field] = url
 
-    # Keep useful caption text, but remove the title, separators and quality-link lines.
     description_lines = []
     for line in lines:
         if line == lines[0] or re.fullmatch(r"[\W_]+", line, flags=re.UNICODE):
@@ -275,17 +273,20 @@ def save_channel_movie_db(title, year, language, genres, description, poster_id,
             return cur.fetchone()["id"], True
 
 
+# Markdown formatting is intentionally disabled to prevent Telegram entity parsing errors.
 def format_movie(movie):
     year = movie["year"] if movie["year"] else "N/A"
     genres = movie["genres"] or "Not specified"
     description = (movie["description"] or "No description added.")[:650]
+
     text = (
-        f"🎬 *{movie['title']}* ({year})\n"
+        f"🎬 {movie['title']} ({year})\n"
         f"🌍 Language: {movie['language']}\n"
-        f"🎭 Genre: {genres}\n\n{description}"
+        f"🎭 Genre: {genres}\n\n"
+        f"{description}"
     )
     if movie["official_url"]:
-        text += f"\n\n🔗 [Official page]({movie['official_url']})"
+        text += f"\n\n🔗 Official page: {movie['official_url']}"
     return text[:1000]
 
 
@@ -314,7 +315,8 @@ async def show_movies(message, movies):
         if poster:
             try:
                 await message.reply_photo(
-                    photo=poster, caption=text, parse_mode="Markdown",
+                    photo=poster,
+                    caption=text,
                     reply_markup=markup,
                 )
                 continue
@@ -322,7 +324,8 @@ async def show_movies(message, movies):
                 log.exception("Could not send poster for movie id=%s", movie["id"])
 
         await message.reply_text(
-            text, parse_mode="Markdown", disable_web_page_preview=True,
+            text,
+            disable_web_page_preview=True,
             reply_markup=markup,
         )
 
@@ -418,7 +421,6 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not message or not chat:
         return
 
-    # Only import from the channel ID configured in Render.
     if not LOG_CHANNEL_ID:
         log.warning("LOG_CHANNEL_ID is not configured; channel post ignored.")
         return
@@ -442,7 +444,6 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
             "%s channel movie: %s (id=%s)",
             "Imported" if created else "Updated", parsed["title"], movie_id,
         )
-        # Optional admin confirmation; no public channel reply is sent.
         if ADMIN_ID:
             try:
                 await context.bot.send_message(
@@ -503,8 +504,6 @@ def main():
     app.add_handler(CommandHandler("addmovie", add_movie))
     app.add_handler(CommandHandler("deletemovie", delete_movie))
     app.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(genre|language):"))
-
-    # Channel posts must be handled before ordinary text messages.
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
