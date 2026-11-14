@@ -188,7 +188,6 @@ def parse_movie_post(caption, reply_markup=None):
             break  
 
     links = {}
-    # 1. Caption text mathi link shodhse
     for field, pattern in QUALITY_PATTERNS.items():  
         match = pattern.search(caption or "")  
         if match:  
@@ -196,7 +195,6 @@ def parse_movie_post(caption, reply_markup=None):
             if urlparse(url).scheme in ("http", "https"):  
                 links[field] = url  
 
-    # 2. Inline Buttons mathi badhi j links direct capture kari lese
     if reply_markup and hasattr(reply_markup, "inline_keyboard"):
         for row in reply_markup.inline_keyboard:
             for button in row:
@@ -495,9 +493,6 @@ def main():
     init_pool()
     init_db()
 
-    if not LOG_JSON_CHANNEL_ID := LOG_CHANNEL_ID:
-        pass
-
     if not LOG_CHANNEL_ID:
         log.warning("Set LOG_CHANNEL_ID in Render to enable automatic channel imports.")
 
@@ -506,4 +501,6 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("addmovie", add_movie))
     app.add_handler(CommandHandler("deletemovie", delete_movie))
-    app.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(genre|
+    app.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(genre|language):"))
+    app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, handle_channel_post))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ha
