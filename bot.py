@@ -154,66 +154,82 @@ def find_movies_db(search_text=None, field=None, value=None, limit=8):
                 """, (limit,))
             return cur.fetchall()
 
-def parse_movie_post(caption):
+def parse_movie_post(caption, reply_markup=None):
+    """Read a movie-post caption and extract title/year/language/quality URLs from text or buttons."""
     lines = [line.strip() for line in (caption or "").splitlines() if line.strip()]
     if not lines:
         return None
 
-    title = ""
-    for line in lines:
-        if re.fullmatch(r"[\W_]+", line, flags=re.UNICODE):
-            continue
-        if re.search(r"\b(480|720|1080)\s*p\b\s*:", line, re.I):
-            continue
-        if YEAR_RE.search(line) and len(line) < 16 and not re.search(r"[A-Za-z]{3}", line):
-            continue
-        cleaned = re.sub(r"^[^\w]+", "", line, flags=re.UNICODE).strip()
-        cleaned = re.sub(r"[*_`]", "", cleaned).strip()
-        if cleaned and not cleaned.startswith("#"):
-            title = cleaned
-            break
+    title = ""  
+    for line in lines:  
+        if re.fullmatch(r"[\W_]+", line, flags=re.UNICODE):  
+            continue  
+        if re.search(r"\b(480|720|1080)\s*p\b\s*:", line, re.I):  
+            continue  
+        if YEAR_RE.search(line) and len(line) < 16 and not re.search(r"[A-Za-z]{3}", line):  
+            continue  
+        cleaned = re.sub(r"^[^\w]+", "", line, flags=re.UNICODE).strip()  
+        cleaned = re.sub(r"[*_`]", "", cleaned).strip()  
+        if cleaned and not cleaned.startswith("#"):  
+            title = cleaned  
+            break  
 
-    if not title:
-        return None
+    if not title:  
+        return None  
 
-    year_match = YEAR_RE.search(caption or "")
-    year = int(year_match.group(1)) if year_match else None
+    year_match = YEAR_RE.search(caption or "")  
+    year = int(year_match.group(1)) if year_match else None  
 
-    language = "Other"
-    tags = re.findall(r"#([A-Za-z]+)", caption or "")
-    for tag in tags:
-        if tag.lower() in LANGUAGE_TAGS:
-            language = LANGUAGE_TAGS[tag.lower()]
-            break
+    language = "Other"  
+    tags = re.findall(r"#([A-Za-z]+)", caption or "")  
+    for tag in tags:  
+        if tag.lower() in LANGUAGE_TAGS:  
+            language = LANGUAGE_TAGS[tag.lower()]  
+            break  
 
     links = {}
-    for field, pattern in QUALITY_PATTERNS.items():
-        match = pattern.search(caption or "")
-        if match:
-            url = match.group(1).rstrip(".,;)]}>")
-            if urlparse(url).scheme in ("http", "https"):
-                links[field] = url
+    # 1. Caption text mathi link shodhse
+    for field, pattern in QUALITY_PATTERNS.items():  
+        match = pattern.search(caption or "")  
+        if match:  
+            url = match.group(1).rstrip(".,;)]}>")  
+            if urlparse(url).scheme in ("http", "https"):  
+                links[field] = url  
 
-    description_lines = []
-    for line in lines:
-        if line == lines[0] or re.fullmatch(r"[\W_]+", line, flags=re.UNICODE):
-            continue
-        if re.search(r"\b(480|720|1080)\s*p\b\s*:", line, re.I):
-            continue
-        if YEAR_RE.fullmatch(re.sub(r"^[^\d]*|[^\d]*$", "", line)):
-            continue
-        if line.startswith("⊰") or line.startswith("⏬"):
-            continue
-        description_lines.append(line)
+    # 2. Inline Buttons mathi link read karse
+    if reply_markup and hasattr(reply_markup, "inline_keyboard"):
+        for row in reply_markup.inline_keyboard:
+            for button in row:
+                if getattr(button, "url", None):
+                    btn_text = button.text.lower()
+                    btn_url = button.url
+                    if "480" in btn_text:
+                        links["download_480"] = btn_url
+                    elif "720" in btn_text:
+                        links["download_720"] = btn_url
+                    elif "1080" in btn_text:
+                        links["download_1080"] = btn_url
 
-    description = "\n".join(description_lines).strip()
-    return {
-        "title": title[:250],
-        "year": year,
-        "language": language,
-        "genres": "",
-        "description": description[:2000],
-        "links": links,
+    description_lines = []  
+    for line in lines:  
+        if line == lines[0] or re.fullmatch(r"[\W_]+", line, flags=re.UNICODE):  
+            continue  
+        if re.search(r"\b(480|720|1080)\s*p\b\s*:", line, re.I):  
+            continue  
+        if YEAR_RE.fullmatch(re.sub(r"^[^\d]*|[^\d]*$", "", line)):  
+            continue  
+        if line.startswith("⊰") or line.startswith("⏬"):  
+            continue  
+        description_lines.append(line)  
+
+    description = "\n".join(description_lines).strip()  
+    return {  
+        "title": title[:250],  
+        "year": year,  
+        "language": language,  
+        "genres": "",  
+        "description": description[:2000],  
+        "links": links,  
     }
 
 def save_channel_movie_db(title, year, language, genres, description, poster_id, links):
@@ -410,7 +426,7 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     caption = message.caption or message.text or ""
-    parsed = parse_movie_post(caption)
+    parsed = parse_movie_post(caption, reply_markup=message.reply_markup)
     if not parsed:
         log.info("Channel post ignored: could not identify a movie title.")
         return
@@ -493,11 +509,4 @@ def main():
         port=PORT,
         url_path=WEBHOOK_PATH,
         webhook_url=webhook_url,
-        secret_token=WEBHOOK_SECRET,
-        allowed_updates=Update.ALL_TYPES,
-        bootstrap_retries=-1,
-    )
-
-if __name__ == "__main__":
-    main()
-                        
+        secret_to
