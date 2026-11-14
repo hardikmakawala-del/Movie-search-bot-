@@ -42,11 +42,6 @@ LANGUAGES = [
 
 DB_POOL = None
 
-QUALITY_PATTERNS = {
-    "download_480": re.compile(r"\b480\sp\b\s[:-]\s*(https?://\S+)", re.I),
-    "download_720": re.compile(r"\b720\sp\b\s[:-]\s*(https?://\S+)", re.I),
-    "download_1080": re.compile(r"\b1080\sp\b\s[:-]\s*(https?://\S+)", re.I),
-}
 YEAR_RE = re.compile(r"\b(18[8-9]\d|19\d{2}|20\d{2}|2100)\b")
 LANGUAGE_TAGS = {
     "hindi": "Hindi", "gujarati": "Gujarati", "english": "English",
@@ -161,38 +156,42 @@ def parse_movie_post(caption, reply_markup=None):
 
     title = ""  
     for line in lines:  
-        if re.fullmatch(r"[\W_]+", line, flags=re.UNICODE):  
-            continue  
-        if re.search(r"\b(480|720|1080)\s*p\b\s*:", line, re.I):  
-            continue  
-        if YEAR_RE.search(line) and len(line) < 16 and not re.search(r"[A-Za-z]{3}", line):  
-            continue  
-        cleaned = re.sub(r"^[^\w]+", "", line, flags=re.UNICODE).strip()  
-        cleaned = re.sub(r"[*_`]", "", cleaned).strip()  
-        if cleaned and not cleaned.startswith("#"):  
-            title = cleaned  
-            break  
+        if "title" in line.lower():
+            parts = line.split(":", 1)
+            if len(parts) > 1:
+                title = parts[1].strip()
+                break
+        if not title and not line.startswith("#") and not "http" in line:
+            title = line
+            break
 
-    if not title:  
-        return None  
+    if not title:
+        title = "Unknown Movie"
 
     year_match = YEAR_RE.search(caption or "")  
     year = int(year_match.group(1)) if year_match else None  
 
-    language = "Other"  
-    tags = re.findall(r"#([A-Za-z]+)", caption or "")  
-    for tag in tags:  
-        if tag.lower() in LANGUAGE_TAGS:  
-            language = LANGUAGE_TAGS[tag.lower()]  
-            break  
+    language = "Hindi"  # Default to Hindi if not specified
+    if "gujarati" in (caption or "").lower():
+        language = "Gujarati"
+    elif "english" in (caption or "").lower():
+        language = "English"
 
     links = {}
-    for field, pattern in QUALITY_PATTERNS.items():  
-        match = pattern.search(caption or "")  
-        if match:  
-            url = match.group(1).rstrip(".,;)]}>")  
-            if urlparse(url).scheme in ("http", "https"):  
-                links[field] = url  
+    # Extract all URLs found in the caption text
+    all_urls = re.findall(r'https?://\S+', caption or "")
+    for url in all_urls:
+        clean_url = url.rstrip(".,;)]}>")
+        if "480" in clean_url or "480p" in (caption or "").lower():
+            links["download_480"] = clean_url
+        if "720" in clean_url or "720p" in (caption or "").lower():
+            links["download_720"] = clean_url
+        if "1080" in clean_url or "1080p" in (caption or "").lower():
+            links["download_1080"] = clean_url
+
+    # Fallback if specific quality tag wasn't matched with URL
+    if all_urls and not links:
+        links["download_720"] = all_urls[0]
 
     if reply_markup and hasattr(reply_markup, "inline_keyboard"):
         for row in reply_markup.inline_keyboard:
@@ -205,32 +204,13 @@ def parse_movie_post(caption, reply_markup=None):
                         links["download_720"] = btn_url
                     elif "1080" in button.text or "1080" in btn_url:
                         links["download_1080"] = btn_url
-                    elif not links.get("download_480"):
-                        links["download_480"] = btn_url
-                    elif not links.get("download_720"):
-                        links["download_720"] = btn_url
-                    elif not links.get("download_1080"):
-                        links["download_1080"] = btn_url
 
-    description_lines = []  
-    for line in lines:  
-        if line == lines[0] or re.fullmatch(r"[\W_]+", line, flags=re.UNICODE):  
-            continue  
-        if re.search(r"\b(480|720|1080)\s*p\b\s*:", line, re.I):  
-            continue  
-        if YEAR_RE.fullmatch(re.sub(r"^[^\d]*|[^\d]*$", "", line)):  
-            continue  
-        if line.startswith("⊰") or line.startswith("⏬"):  
-            continue  
-        description_lines.append(line)  
-
-    description = "\n".join(description_lines).strip()  
     return {  
         "title": title[:250],  
         "year": year,  
         "language": language,  
-        "genres": "",  
-        "description": description[:2000],  
+        "genres": "Romance/Comedy",  
+        "description": caption[:2000],  
         "links": links,  
     }
 
@@ -286,22 +266,14 @@ def format_movie(movie):
     genres = movie["genres"] or "Not specified"
     description = (movie["description"] or "No description added.")[:650]
 
-    text = (
-        f"🎬 {movie['title']} ({year})\n"
-        f"🌍 Language: {movie['language']}\n"
-        f"🎭 Genre: {genres}\n\n"
-        f"{description}"
-    )
-    if movie.get("official_url"):
-        text += f"\n\n🔗 Official page: {movie['official_url']}"
-    return text[:1000]
+    return f"{description}"[:1000]
 
 def download_keyboard(movie):
     buttons = []
     for label, field in (
-        ("480p Download", "download_480"),
-        ("720p Download", "download_720"),
-        ("1080p Download", "download_1080"),
+        ("📥 480p Download", "download_480"),
+        ("📥 720p Download", "download_720"),
+        ("📥 1080p Download", "download_1080"),
     ):
         url = movie.get(field) or ""
         if url and urlparse(url).scheme in ("http", "https"):
@@ -339,7 +311,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "નમસ્તે! 🎬 Movie Search & Filter Bot માં સ્વાગત છે.\n\n"
         "ફિલ્મનું નામ શોધો અથવા Genre / Language પ્રમાણે browse કરો.",
-        reply_reply=home_keyboard(),
+        reply_markup=home_keyboard(),
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -435,4 +407,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-            
+                              
