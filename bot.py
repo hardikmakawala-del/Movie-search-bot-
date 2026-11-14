@@ -196,18 +196,23 @@ def parse_movie_post(caption, reply_markup=None):
             if urlparse(url).scheme in ("http", "https"):  
                 links[field] = url  
 
-    # 2. Inline Buttons mathi link read karse
+    # 2. Inline Buttons mathi badhi j links direct capture kari lese
     if reply_markup and hasattr(reply_markup, "inline_keyboard"):
         for row in reply_markup.inline_keyboard:
             for button in row:
                 if getattr(button, "url", None):
-                    btn_text = button.text.lower()
                     btn_url = button.url
-                    if "480" in btn_text:
+                    if "480" in button.text or "480" in btn_url:
                         links["download_480"] = btn_url
-                    elif "720" in btn_text:
+                    elif "720" in button.text or "720" in btn_url:
                         links["download_720"] = btn_url
-                    elif "1080" in btn_text:
+                    elif "1080" in button.text or "1080" in btn_url:
+                        links["download_1080"] = btn_url
+                    elif not links.get("download_480"):
+                        links["download_480"] = btn_url
+                    elif not links.get("download_720"):
+                        links["download_720"] = btn_url
+                    elif not links.get("download_1080"):
                         links["download_1080"] = btn_url
 
     description_lines = []  
@@ -490,6 +495,9 @@ def main():
     init_pool()
     init_db()
 
+    if not LOG_JSON_CHANNEL_ID := LOG_CHANNEL_ID:
+        pass
+
     if not LOG_CHANNEL_ID:
         log.warning("Set LOG_CHANNEL_ID in Render to enable automatic channel imports.")
 
@@ -498,15 +506,4 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("addmovie", add_movie))
     app.add_handler(CommandHandler("deletemovie", delete_movie))
-    app.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(genre|language):"))
-    app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, handle_channel_post))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-
-    webhook_url = f"{RENDER_EXTERNAL_URL}/{WEBHOOK_PATH}"
-    log.info("Starting webhook at %s", webhook_url)
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=WEBHOOK_PATH,
-        webhook_url=webhook_url,
-        secret_to
+    app.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(genre|
