@@ -10,14 +10,14 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-BOT_TOKEN = os.environ["9094525892:AAEK_DGomyfOFdZlDJnM2UUYHzmojvLXdMg"]
-DATABASE_URL = os.environ["postgresql://movie_search_db_icdn_user:WR85z0QEg1sxQunFEeFkQP2dBp33AfQk@dpg-dbq4kh2jnfac73f3iivg-a/movie_search_db_icdn"]
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "9094525892:AAEK_DGomyfOFdZlDJnM2UUYHzmojvLXdMg")
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://movie_search_db_icdn_user:WR85z0QEg1sxQunFEeFkQP2dBp33AfQk@dpg-dbq4kh2jnfac73f3iivg-a/movie_search_db_icdn")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "8723214887"))
-RENDER_EXTERNAL_URL = os.environ["https://movie-search-bot-mm1.onrender.com"].rstrip("/")
+RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://movie-search-bot-mm1.onrender.com").rstrip("/")
 PORT = int(os.environ.get("PORT", "10000"))
-WEBHOOK_PATH = os.environ["moviebot-hook-7x9k2"].strip("/")
-WEBHOOK_SECRET = os.environ["bfd93db54adbf04ccc8f76e6aaf3e5a7"].strip()
-LOG_CHANNEL_ID = os.environ.get("-1004443842685", "").strip()
+WEBHOOK_PATH = os.environ.get("WEBHOOK_PATH", "moviebot-hook-7x9k2").strip("/")
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "bfd93db54adbf04ccc8f76e6aaf3e5a7").strip()
+LOG_CHANNEL_ID = os.environ.get("LOG_CHANNEL_ID", "-1004443842685").strip()
 
 DB_POOL = None
 
@@ -69,4 +69,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
+    
