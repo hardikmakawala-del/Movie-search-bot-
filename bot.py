@@ -22,14 +22,9 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# Direct Credentials Setup
 BOT_TOKEN = "9094525892:AAEK_DGomyfOFdZlDJnM2UUYHzmojvLXdMg"
 DATABASE_URL = "postgresql://movie_search_db_icdn_user:WR85z0QEg1sxQunFEeFkQP2dBp33AfQk@dpg-dbq4kh2jnfac73f3iivg-a/movie_search_db_icdn"
 ADMIN_ID = 8723214887
-RENDER_EXTERNAL_URL = "https://movie-search-bot-mm1.onrender.com".rstrip("/")
-PORT = int(os.environ.get("PORT", "10000"))
-WEBHOOK_PATH = "moviebot-hook-7x9k2".strip("/")
-WEBHOOK_SECRET = "bfd93db54adbf04ccc8f76e6aaf3e5a7".strip()
 LOG_CHANNEL_ID = "-1004443842685".strip()
 
 GENRES = [
@@ -487,18 +482,9 @@ def main():
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))  
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))  
 
-    webhook_url = f"{RENDER_EXTERNAL_URL}/{WEBHOOK_PATH}"  
-    log.info("Starting webhook at %s", webhook_url)  
-    app.run_webhook(  
-        listen="0.0.0.0",  
-        port=PORT,  
-        url_path=WEBHOOK_PATH,  
-        webhook_url=webhook_url,  
-        secret_token=WEBHOOK_SECRET,  
-        allowed_updates=Update.ALL_TYPES,  
-        bootstrap_retries=-1,  
-    )
+    log.info("Starting bot using polling...")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
-        
+    
