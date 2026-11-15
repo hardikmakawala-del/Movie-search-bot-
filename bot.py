@@ -10,10 +10,11 @@ from psycopg2.extras import RealDictCursor
 from telegram import (
     Update, ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton,
+    InlineQueryResultArticle, InputTextMessageContent,
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ContextTypes, filters,
+    InlineQueryHandler, ContextTypes, filters,
 )
 
 logging.basicConfig(
@@ -22,6 +23,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# Direct Credentials Setup
 BOT_TOKEN = "9094525892:AAEK_DGomyfOFdZlDJnM2UUYHzmojvLXdMg"
 DATABASE_URL = "postgresql://movie_search_db_icdn_user:WR85z0QEg1sxQunFEeFkQP2dBp33AfQk@dpg-dbq4kh2jnfac73f3iivg-a/movie_search_db_icdn"
 ADMIN_ID = 8723214887
@@ -315,8 +317,8 @@ async def show_movies(message, movies):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text(
-        "નમસ્તે! 🎬 Movie Search & Filter Bot માં સ્વાગત છે.\n\n"
-        "ફિલ્મનું નામ શોધો અથવા Genre / Language પ્રમાણે browse કરો.",
+        "નમસ્તે! 🎬 AutoFilter Movie Bot માં સ્વાગત છે.\n\n"
+        "ફિલ્મનું નામ શોધો અથવા ગમે તે chat માં `@botusername movie_name` લખીને search કરો!",
         reply_markup=home_keyboard(),
     )
 
@@ -324,73 +326,31 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "ઉપયોગ:\n"
         "• Search movie: ફિલ્મનું નામ લખો\n"
-        "• Browse genres: genre પસંદ કરો\n"
-        "• Browse languages: ભાષા પસંદ કરો\n"
-        "• Latest movies: તાજેતરમાં ઉમેરેલી ફિલ્મો\n\n"
-        "Admin માટે /addmovie command ઉપલબ્ધ છે.\n"
-        "Log Channel માં નવી authorized movie post આવશે તો bot આપમેળે import કરશે.",
+        "• Inline Search: ગમે તે group/chat માં `@your_bot_username movie_name` લખો\n"
+        "• Browse genres / languages: બટનથી શોધો\n"
+        "• AutoFilter: Channel માં પોસ્ટ મૂકતાની સાથે bot માં આવી જશે.",
         reply_markup=home_keyboard(),
     )
 
-async def add_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if ADMIN_ID == 0 or update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("આ command ફક્ત bot admin માટે છે.")
+async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.inline_query.query.strip()
+    if not query:
         return
 
-    raw = update.message.text.partition(" ")[2].strip()  
-    parts = [p.strip() for p in raw.split("|")]  
-    if len(parts) != 10:  
-        await update.message.reply_text(  
-            "Format:\n/addmovie Title|Year|Language|Genre1,Genre2|Description|PosterURL|OfficialURL|480pURL|720pURL|1080pURL"  
-        )  
-        return  
-
-    title, year_text, language, genres, description, poster_url, official_url, d480, d720, d1080 = parts  
-    try:  
-        year = int(year_text) if year_text else None  
-        if year and not (1888 <= year <= 2100):  
-            raise ValueError()  
-    except ValueError:  
-        await update.message.reply_text("Year ખોટું છે. ઉદાહરણ: 2024")  
-        return  
-
-    for url in (poster_url, official_url, d480, d720, d1080):  
-        if url and urlparse(url).scheme not in ("http", "https"):  
-            await update.message.reply_text("URL http:// અથવા https:// થી શરૂ થવો જોઈએ.")  
-            return  
-
-    def insert():  
-        with db_connection() as conn:  
-            with conn.cursor() as cur:  
-                cur.execute("""  
-                    INSERT INTO movies (  
-                        title, year, language, genres, description, poster_url, official_url,  
-                        download_480, download_720, download_1080  
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)  
-                """, (title, year, language, genres, description, poster_url, official_url, d480, d720, d1080))  
-
-    await asyncio.to_thread(insert)  
-    await update.message.reply_text(f"✅ '{title}' database માં ઉમેરાઈ ગઈ.")
-
-async def delete_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if ADMIN_ID == 0 or update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("આ command ફક્ત bot admin માટે છે.")
-        return
-    raw = update.message.text.partition(" ")[2].strip()
-    if not raw.isdigit():
-        await update.message.reply_text("ઉપયોગ: /deletemovie MOVIE_ID")
-        return
-
-    def delete():  
-        with db_connection() as conn:  
-            with conn.cursor() as cur:  
-                cur.execute("DELETE FROM movies WHERE id = %s RETURNING title", (int(raw),))  
-                return cur.fetchone()  
-
-    row = await asyncio.to_thread(delete)  
-    await update.message.reply_text(  
-        f"🗑️ Deleted: {row['title']}" if row else "આ ID ની ફિલ્મ મળી નથી."  
-    )
+    movies = await asyncio.to_thread(find_movies_db, query, None, None, 10)
+    results = []
+    for movie in movies:
+        text = format_movie(movie)
+        results.append(
+            InlineQueryResultArticle(
+                id=str(movie["id"]),
+                title=f"{movie['title']} ({movie['year'] or 'N/A'})",
+                description=f"Language: {movie['language']} | Click to get links",
+                input_message_content=InputTextMessageContent(text),
+                reply_markup=download_keyboard(movie),
+            )
+        )
+    await update.inline_query.answer(results, cache_time=5)
 
 async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
@@ -400,7 +360,6 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         return  
 
     if not LOG_CHANNEL_ID:  
-        log.warning("LOG_CHANNEL_ID is not configured; channel post ignored.")  
         return  
     if str(chat.id) != LOG_CHANNEL_ID and (chat.username or "").lower() != LOG_CHANNEL_ID.lstrip("@").lower():  
         return  
@@ -408,30 +367,15 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
     caption = message.caption or message.text or ""  
     parsed = parse_movie_post(caption)  
     if not parsed:  
-        log.info("Channel post ignored: could not identify a movie title.")  
         return  
 
     poster_id = message.photo[-1].file_id if message.photo else ""  
     try:  
-        movie_id, created = await asyncio.to_thread(  
+        await asyncio.to_thread(  
             save_channel_movie_db,  
             parsed["title"], parsed["year"], parsed["language"],  
             parsed["genres"], parsed["description"], poster_id, parsed["links"],  
         )  
-        log.info(  
-            "%s channel movie: %s (id=%s)",  
-            "Imported" if created else "Updated", parsed["title"], movie_id,  
-        )  
-        if ADMIN_ID:  
-            try:  
-                await context.bot.send_message(  
-                    chat_id=ADMIN_ID,  
-                    text=f"✅ {'Imported' if created else 'Updated'}: {parsed['title']}\n"  
-                         f"Poster: {'yes' if poster_id else 'no'} | "  
-                         f"Links: {len(parsed['links'])}",  
-                )  
-            except Exception:  
-                log.exception("Could not send import confirmation to admin")  
     except Exception:  
         log.exception("Failed to import channel post")
 
@@ -470,21 +414,17 @@ def main():
     init_pool()
     init_db()
 
-    if not LOG_CHANNEL_ID:  
-        log.warning("Set LOG_CHANNEL_ID in Render to enable automatic channel imports.")  
-
     app = Application.builder().token(BOT_TOKEN).concurrent_updates(8).build()  
     app.add_handler(CommandHandler("start", start))  
     app.add_handler(CommandHandler("help", help_command))  
-    app.add_handler(CommandHandler("addmovie", add_movie))  
-    app.add_handler(CommandHandler("deletemovie", delete_movie))  
     app.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(genre|language):"))  
+    app.add_handler(InlineQueryHandler(inline_query))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))  
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))  
 
-    log.info("Starting bot using polling...")
+    log.info("Starting bot with AutoFilter & Inline features...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
-    
+        
