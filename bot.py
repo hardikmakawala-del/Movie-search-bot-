@@ -244,4 +244,4 @@ def save_channel_movie_db(title, year, language, genres, description, poster_id,
                     poster_id, poster_id,  
                     links.get("download_480", ""), links.get("download_480", ""),  
                     links.get("download_720", ""), links.get("download_720", ""),  
-                    links.get("download_1080", ""), links.get("download_108
+                    links.get("download_1080", ""), links.get("download_1080", ""),
