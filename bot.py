@@ -40,10 +40,11 @@ LANGUAGES = [
 
 DB_POOL = None
 
+# Improved patterns to easily catch quality links from channel captions
 QUALITY_PATTERNS = {
-    "download_480": re.compile(r"\b480\sp\b\s[:-]\s*(https?://\S+)", re.I),
-    "download_720": re.compile(r"\b720\sp\b\s[:-]\s*(https?://\S+)", re.I),
-    "download_1080": re.compile(r"\b1080\sp\b\s[:-]\s*(https?://\S+)", re.I),
+    "download_480": re.compile(r"480p.*?['\"]?(https?://\S+)['\"]?", re.I),
+    "download_720": re.compile(r"720p.*?['\"]?(https?://\S+)['\"]?", re.I),
+    "download_1080": re.compile(r"1080p.*?['\"]?(https?://\S+)['\"]?", re.I),
 }
 YEAR_RE = re.compile(r"\b(18[8-9]\d|19\d{2}|20\d{2}|2100)\b")
 LANGUAGE_TAGS = {
@@ -161,7 +162,7 @@ def parse_movie_post(caption):
     for line in lines:  
         if re.fullmatch(r"[\W_]+", line, flags=re.UNICODE):  
             continue  
-        if re.search(r"\b(480|720|1080)\s*p\b\s*:", line, re.I):  
+        if re.search(r"\b(480|720|1080)\s*p\b", line, re.I):  
             continue  
         if YEAR_RE.search(line) and len(line) < 16 and not re.search(r"[A-Za-z]{3}", line):  
             continue  
@@ -172,7 +173,7 @@ def parse_movie_post(caption):
             break  
 
     if not title:  
-        return None  
+        title = lines[0] # Fallback to first line if regex misses
 
     year_match = YEAR_RE.search(caption or "")  
     year = int(year_match.group(1)) if year_match else None  
@@ -192,24 +193,12 @@ def parse_movie_post(caption):
             if urlparse(url).scheme in ("http", "https"):  
                 links[field] = url  
 
-    description_lines = []  
-    for line in lines:  
-        if line == lines[0] or re.fullmatch(r"[\W_]+", line, flags=re.UNICODE):  
-            continue  
-        if re.search(r"\b(480|720|1080)\s*p\b\s*:", line, re.I):  
-            continue  
-        if YEAR_RE.fullmatch(re.sub(r"^[^\d]*|[^\d]*$", "", line)):  
-            continue  
-        if line.startswith("⊰") or line.startswith("⏬"):  
-            continue  
-        description_lines.append(line)  
-
-    description = "\n".join(description_lines).strip()  
+    description = "\n".join(lines).strip()  
     return {  
         "title": title[:250],  
         "year": year,  
         "language": language,  
-        "genres": "",  
+        "genres": "Action/Comedy", # Default or extract if possible
         "description": description[:2000],  
         "links": links,  
     }
@@ -229,7 +218,7 @@ def save_channel_movie_db(title, year, language, genres, description, poster_id,
                 cur.execute("""  
                     UPDATE movies SET  
                         language = %s,  
-                        genres = %s,  
+                        genres = CASE WHEN %s <> '' THEN %s ELSE genres END,  
                         description = %s,  
                         poster_url = CASE WHEN %s <> '' THEN %s ELSE poster_url END,  
                         download_480 = CASE WHEN %s <> '' THEN %s ELSE download_480 END,  
@@ -237,7 +226,7 @@ def save_channel_movie_db(title, year, language, genres, description, poster_id,
                         download_1080 = CASE WHEN %s <> '' THEN %s ELSE download_1080 END  
                     WHERE id = %s  
                 """, (  
-                    language, genres, description,  
+                    language, genres, genres, description,  
                     poster_id, poster_id,  
                     links.get("download_480", ""), links.get("download_480", ""),  
                     links.get("download_720", ""), links.get("download_720", ""),  
@@ -272,8 +261,6 @@ def format_movie(movie):
         f"🎭 Genre: {genres}\n\n"  
         f"{description}"  
     )  
-    if movie.get("official_url"):  
-        text += f"\n\n🔗 Official page: {movie['official_url']}"  
     return text[:1000]
 
 def download_keyboard(movie):
@@ -297,6 +284,7 @@ async def show_movies(message, movies):
         text = format_movie(movie)  
         markup = download_keyboard(movie)  
         poster = movie.get("poster_url") or ""  
+        
         if poster:  
             try:  
                 await message.reply_photo(  
@@ -358,7 +346,6 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if not message or not chat:  
         return  
-
     if not LOG_CHANNEL_ID:  
         return  
     if str(chat.id) != LOG_CHANNEL_ID and (chat.username or "").lower() != LOG_CHANNEL_ID.lstrip("@").lower():  
@@ -371,11 +358,31 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     poster_id = message.photo[-1].file_id if message.photo else ""  
     try:  
-        await asyncio.to_thread(  
+        movie_id, is_new = await asyncio.to_thread(  
             save_channel_movie_db,  
             parsed["title"], parsed["year"], parsed["language"],  
             parsed["genres"], parsed["description"], poster_id, parsed["links"],  
-        )  
+        )
+        
+        # OPTIONAL: If you want the bot to automatically add buttons to the original channel post if it has links
+        if parsed["links"]:
+            # Fetch saved movie details to build markup
+            with db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT * FROM movies WHERE id = %s", (movie_id,))
+                    movie_row = cur.fetchone()
+                    if movie_row:
+                        markup = download_keyboard(movie_row)
+                        if markup and message.photo:
+                            try:
+                                await context.bot.edit_message_caption(
+                                    chat_id=chat.id,
+                                    message_id=message.message_id,
+                                    caption=message.caption,
+                                    reply_markup=markup
+                                )
+                            except Exception:
+                                pass
     except Exception:  
         log.exception("Failed to import channel post")
 
@@ -427,4 +434,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
+                
