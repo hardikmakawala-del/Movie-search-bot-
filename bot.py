@@ -40,7 +40,6 @@ LANGUAGES = [
 
 DB_POOL = None
 
-# Improved patterns to easily catch quality links from channel captions
 QUALITY_PATTERNS = {
     "download_480": re.compile(r"480p.*?['\"]?(https?://\S+)['\"]?", re.I),
     "download_720": re.compile(r"720p.*?['\"]?(https?://\S+)['\"]?", re.I),
@@ -173,7 +172,7 @@ def parse_movie_post(caption):
             break  
 
     if not title:  
-        title = lines[0] # Fallback to first line if regex misses
+        title = lines[0]  
 
     year_match = YEAR_RE.search(caption or "")  
     year = int(year_match.group(1)) if year_match else None  
@@ -193,12 +192,27 @@ def parse_movie_post(caption):
             if urlparse(url).scheme in ("http", "https"):  
                 links[field] = url  
 
-    description = "\n".join(lines).strip()  
+    # Links filter out kari didhi che jethi text/description ma links na dekhay
+    description_lines = []  
+    for line in lines:  
+        if line == lines[0] or re.fullmatch(r"[\W_]+", line, flags=re.UNICODE):  
+            continue  
+        if re.search(r"\b(480|720|1080)\s*p\b", line, re.I):  
+            continue  
+        if "http://" in line or "https://" in line:  
+            continue
+        if YEAR_RE.fullmatch(re.sub(r"^[^\d]*|[^\d]*$", "", line)):  
+            continue  
+        if line.startswith("⊰") or line.startswith("⏬") or line.startswith("♻️"):  
+            continue  
+        description_lines.append(line)  
+
+    description = "\n".join(description_lines).strip()  
     return {  
         "title": title[:250],  
         "year": year,  
         "language": language,  
-        "genres": "Action/Comedy", # Default or extract if possible
+        "genres": "Action/Comedy", 
         "description": description[:2000],  
         "links": links,  
     }
@@ -230,208 +244,4 @@ def save_channel_movie_db(title, year, language, genres, description, poster_id,
                     poster_id, poster_id,  
                     links.get("download_480", ""), links.get("download_480", ""),  
                     links.get("download_720", ""), links.get("download_720", ""),  
-                    links.get("download_1080", ""), links.get("download_1080", ""),  
-                    existing["id"],  
-                ))  
-                return existing["id"], False  
-
-            cur.execute("""  
-                INSERT INTO movies (  
-                    title, year, language, genres, description, poster_url,  
-                    download_480, download_720, download_1080  
-                )  
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)  
-                RETURNING id  
-            """, (  
-                title, year, language, genres, description, poster_id,  
-                links.get("download_480", ""),  
-                links.get("download_720", ""),  
-                links.get("download_1080", ""),  
-            ))  
-            return cur.fetchone()["id"], True
-
-def format_movie(movie):
-    year = movie["year"] if movie["year"] else "N/A"
-    genres = movie["genres"] or "Not specified"
-    description = (movie["description"] or "No description added.")[:650]
-
-    text = (  
-        f"🎬 {movie['title']} ({year})\n"  
-        f"🌍 Language: {movie['language']}\n"  
-        f"🎭 Genre: {genres}\n\n"  
-        f"{description}"  
-    )  
-    return text[:1000]
-
-def download_keyboard(movie):
-    buttons = []
-    for label, field in (
-        ("480p Download", "download_480"),
-        ("720p Download", "download_720"),
-        ("1080p Download", "download_1080"),
-    ):
-        url = movie.get(field) or ""
-        if url and urlparse(url).scheme in ("http", "https"):
-            buttons.append([InlineKeyboardButton(label, url=url)])
-    return InlineKeyboardMarkup(buttons) if buttons else None
-
-async def show_movies(message, movies):
-    if not movies:
-        await message.reply_text("આ શોધ માટે કોઈ ફિલ્મ મળી નથી. બીજી રીતે શોધી જુઓ.")
-        return
-
-    for movie in movies:  
-        text = format_movie(movie)  
-        markup = download_keyboard(movie)  
-        poster = movie.get("poster_url") or ""  
-        
-        if poster:  
-            try:  
-                await message.reply_photo(  
-                    photo=poster,  
-                    caption=text,  
-                    reply_markup=markup,  
-                )  
-                continue  
-            except Exception:  
-                log.exception("Could not send poster for movie id=%s", movie["id"])  
-
-        await message.reply_text(  
-            text,  
-            disable_web_page_preview=True,  
-            reply_markup=markup,  
-        )
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text(
-        "નમસ્તે! 🎬 AutoFilter Movie Bot માં સ્વાગત છે.\n\n"
-        "ફિલ્મનું નામ શોધો અથવા ગમે તે chat માં `@botusername movie_name` લખીને search કરો!",
-        reply_markup=home_keyboard(),
-    )
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "ઉપયોગ:\n"
-        "• Search movie: ફિલ્મનું નામ લખો\n"
-        "• Inline Search: ગમે તે group/chat માં `@your_bot_username movie_name` લખો\n"
-        "• Browse genres / languages: બટનથી શોધો\n"
-        "• AutoFilter: Channel માં પોસ્ટ મૂકતાની સાથે bot માં આવી જશે.",
-        reply_markup=home_keyboard(),
-    )
-
-async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.inline_query.query.strip()
-    if not query:
-        return
-
-    movies = await asyncio.to_thread(find_movies_db, query, None, None, 10)
-    results = []
-    for movie in movies:
-        text = format_movie(movie)
-        results.append(
-            InlineQueryResultArticle(
-                id=str(movie["id"]),
-                title=f"{movie['title']} ({movie['year'] or 'N/A'})",
-                description=f"Language: {movie['language']} | Click to get links",
-                input_message_content=InputTextMessageContent(text),
-                reply_markup=download_keyboard(movie),
-            )
-        )
-    await update.inline_query.answer(results, cache_time=5)
-
-async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.effective_message
-    chat = update.effective_chat
-
-    if not message or not chat:  
-        return  
-    if not LOG_CHANNEL_ID:  
-        return  
-    if str(chat.id) != LOG_CHANNEL_ID and (chat.username or "").lower() != LOG_CHANNEL_ID.lstrip("@").lower():  
-        return  
-
-    caption = message.caption or message.text or ""  
-    parsed = parse_movie_post(caption)  
-    if not parsed:  
-        return  
-
-    poster_id = message.photo[-1].file_id if message.photo else ""  
-    try:  
-        movie_id, is_new = await asyncio.to_thread(  
-            save_channel_movie_db,  
-            parsed["title"], parsed["year"], parsed["language"],  
-            parsed["genres"], parsed["description"], poster_id, parsed["links"],  
-        )
-        
-        # OPTIONAL: If you want the bot to automatically add buttons to the original channel post if it has links
-        if parsed["links"]:
-            # Fetch saved movie details to build markup
-            with db_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT * FROM movies WHERE id = %s", (movie_id,))
-                    movie_row = cur.fetchone()
-                    if movie_row:
-                        markup = download_keyboard(movie_row)
-                        if markup and message.photo:
-                            try:
-                                await context.bot.edit_message_caption(
-                                    chat_id=chat.id,
-                                    message_id=message.message_id,
-                                    caption=message.caption,
-                                    reply_markup=markup
-                                )
-                            except Exception:
-                                pass
-    except Exception:  
-        log.exception("Failed to import channel post")
-
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (update.message.text or "").strip()
-    if text == "🔎 Search movie":
-        context.user_data["mode"] = "search"
-        await update.message.reply_text("ફિલ્મનું નામ લખો:")
-    elif text == "🎭 Browse genres":
-        await update.message.reply_text("Genre પસંદ કરો:", reply_markup=list_keyboard(GENRES, "genre"))
-    elif text == "🌍 Browse languages":
-        await update.message.reply_text("Language પસંદ કરો:", reply_markup=list_keyboard(LANGUAGES, "language"))
-    elif text == "🆕 Latest movies":
-        movies = await asyncio.to_thread(find_movies_db)
-        await show_movies(update.message, movies)
-    elif text == "ℹ️ Help":
-        await help_command(update, context)
-    else:
-        movies = await asyncio.to_thread(find_movies_db, text)
-        await show_movies(update.message, movies)
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    kind, value = query.data.split(":", 1)
-    if kind == "genre":
-        movies = await asyncio.to_thread(find_movies_db, None, "genre", value)
-        await query.message.reply_text(f"🎭 Genre: {value}")
-        await show_movies(query.message, movies)
-    elif kind == "language":
-        movies = await asyncio.to_thread(find_movies_db, None, "language", value)
-        await query.message.reply_text(f"🌍 Language: {value}")
-        await show_movies(query.message, movies)
-
-def main():
-    init_pool()
-    init_db()
-
-    app = Application.builder().token(BOT_TOKEN).concurrent_updates(8).build()  
-    app.add_handler(CommandHandler("start", start))  
-    app.add_handler(CommandHandler("help", help_command))  
-    app.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(genre|language):"))  
-    app.add_handler(InlineQueryHandler(inline_query))
-    app.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))  
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))  
-
-    log.info("Starting bot with AutoFilter & Inline features...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == "__main__":
-    main()
-                
+                    links.get("download_1080", ""), links.get("download_108
