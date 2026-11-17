@@ -1,16 +1,18 @@
+import asyncio
+asyncio.set_event_loop(asyncio.new_event_loop())
+
 import os
 import base64
-import asyncio
 from aiohttp import web
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
 # --- CONFIG ---
-API_ID = 29181523  # Tamaro API_ID nakho
-API_HASH = "ba9b8c523e7a8714785bb5480ace5089"  # Tamaro API_HASH nakho
-BOT_TOKEN = "9094525892:AAEK_DGomyfOFdZlDJnM2UUYHzmojvLXdMg"  # @BotFather mathi lidhelo token
-LOG_CHANNEL = -1003957933627  # Tamari private log channel ni ID
-ADMINS = [8723214887] # Tamari Telegram User ID (bracket ma rakhvi)
+API_ID = 29181523
+API_HASH = "ba9b8c523e7a8714785bb5480ace5089"
+BOT_TOKEN = "9094525892:AAEK_DGomyfOFdZlDJnM2UUYHzmojvLXdMg"
+LOG_CHANNEL = -1003957933627
+ADMINS = [8723214887]
 
 app = Client(
     "FileShareBot",
@@ -47,10 +49,10 @@ def decode(base64_string: str) -> str:
 async def start_cmd(client: Client, message: Message):
     if len(message.command) > 1:
         try:
-            encoded_data = message.command
+            encoded_data = message.command[1]
             decoded_data = decode(encoded_data)
             if decoded_data.startswith("get-"):
-                msg_id = int(decoded_data.split("-"))
+                msg_id = int(decoded_data.split("-")[1])
                 await client.copy_message(
                     chat_id=message.chat.id,
                     from_chat_id=LOG_CHANNEL,
