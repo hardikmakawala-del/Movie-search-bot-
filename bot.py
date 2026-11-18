@@ -2,7 +2,7 @@ import asyncio
 asyncio.set_event_loop(asyncio.new_event_loop())
 
 import os
-import base64
+import json
 from aiohttp import web
 from pyrogram import Client, filters
 from pyrogram.types import Message
@@ -12,18 +12,33 @@ API_ID = 29181523
 API_HASH = "ba9b8c523e7a8714785bb5480ace5089"
 BOT_TOKEN = "9094525892:AAEj2C4tFkUeJ36GaDzDK03sdio48iU_xqY"
 LOG_CHANNEL = -1003957933627
-ADMINS = [8723214887]
+ADMINS =
+
+DB_FILE = "movies_db.json"
 
 app = Client(
-    "FileShareBot",
+    "MovieLinkSearchBot",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN
 )
 
+# Simple JSON Database (No MongoDB needed)
+def load_db():
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
+def save_db(data):
+    with open(DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+movies_db = load_db()
+
 # Render Web Service mate Dummy Web Server
 async def handle(request):
-    return web.Response(text="Bot is running!")
+    return web.Response(text="Movie Link Search Bot is running!")
 
 async def start_web_server():
     server = web.Application()
@@ -34,68 +49,80 @@ async def start_web_server():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-def encode(string: str) -> str:
-    string_bytes = string.encode("ascii")
-    base64_bytes = base64.urlsafe_b64encode(string_bytes)
-    return base64_bytes.decode("ascii").strip("=")
-
-def decode(base64_string: str) -> str:
-    base64_string = base64_string.strip("=")
-    base64_bytes = (base64_string + "=" * (-len(base64_string) % 4)).encode("ascii")
-    string_bytes = base64.urlsafe_b64decode(base64_bytes)
-    return string_bytes.decode("ascii")
-
+# 1. Start Command
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client: Client, message: Message):
-    if len(message.command) > 1:
-        try:
-            encoded_data = message.command[1]
-            decoded_data = decode(encoded_data)
-            if decoded_data.startswith("get-"):
-                msg_id = int(decoded_data.split("-")[1])
-                await client.copy_message(
-                    chat_id=message.chat.id,
-                    from_chat_id=LOG_CHANNEL,
-                    message_id=msg_id
-                )
-                return
-        except Exception as e:
-            await message.reply_text(f"❌ Link expired che athva file delete thai gai che.\nError: `{e}`")
-            return
-
-    await message.reply_text("👋 **Namaste!** Mane koi pan file forward karo (Admin only) ane hu teni shareable link aapi dais.")
-
-@app.on_message(filters.private & filters.user(ADMINS) & (filters.document | filters.video | filters.audio))
-async def handle_admin_file(client: Client, message: Message):
-    log_msg = await message.copy(chat_id=LOG_CHANNEL)
-    encoded_id = encode(f"get-{log_msg.id}")
-    bot_username = (await client.get_me()).username
-    share_link = f"https://t.me{bot_username}?start={encoded_id}"
-    
     await message.reply_text(
-        f"✅ **File Log Channel ma save thai gai che!**\n\n🔗 **Share Link:**\n`{share_link}`",
-        quote=True
+        "🎬 **Namaste! Movie Search Bot ma tamaru swagat che.**\n\n"
+        "Tamare je movie ni link joiti hoy tenu naam lakho (jem ke: `Jailer 2`), hu tarat j download link mokli aapis!"
     )
 
-@app.on_message(filters.chat(LOG_CHANNEL) & (filters.document | filters.video | filters.audio))
-async def handle_channel_post(client: Client, message: Message):
-    encoded_id = encode(f"get-{message.id}")
-    bot_username = (await client.get_me()).username
-    share_link = f"https://t.me{bot_username}?start={encoded_id}"
-    
-    for admin in ADMINS:
+# 2. Log Channel ma navi post aave etle save karva mate
+@app.on_message(filters.chat(LOG_CHANNEL))
+async def save_channel_post(client: Client, message: Message):
+    text_content = message.caption or message.text
+    if not text_content:
+        return
+
+    # Duplicate check
+    for item in movies_db:
+        if item["msg_id"] == message.id:
+            item["text"] = text_content.lower()
+            save_db(movies_db)
+            return
+
+    movies_db.append({
+        "msg_id": message.id,
+        "text": text_content.lower()
+    })
+    save_db(movies_db)
+    print(f"Saved post ID: {message.id}")
+
+# 3. Admin bot ne direct forward kare to pan Log Channel ma save kari le
+@app.on_message(filters.private & filters.user(ADMINS) & ~filters.command("start") & (filters.photo | filters.video | filters.document))
+async def admin_forward_post(client: Client, message: Message):
+    copied = await message.copy(chat_id=LOG_CHANNEL)
+    text_content = message.caption or message.text or ""
+    if text_content:
+        movies_db.append({
+            "msg_id": copied.id,
+            "text": text_content.lower()
+        })
+        save_db(movies_db)
+    await message.reply_text("✅ **Tamari movie post Log Channel ma save thai gai che!** Have koi pan user naam lakhshe to aa post mali jashe.")
+
+# 4. User jyare movie nu naam lakhe tyare search karva mate
+@app.on_message(filters.private & filters.text & ~filters.command("start"))
+async def search_movie(client: Client, message: Message):
+    query = message.text.strip().lower()
+    if len(query) < 2:
+        await message.reply_text("⚠️ Kripya movie nu puro naam lakho.")
+        return
+
+    matched_ids = [item["msg_id"] for item in movies_db if query in item["text"]]
+
+    if not matched_ids:
+        await message.reply_text(
+            f"❌ **'{message.text}'** naam ni koi movie mali nathi.\n\n"
+            "Spelling check karine fari try karo athva thodi var pachi check karo."
+        )
+        return
+
+    # Latest 3 matching posts moklse
+    for msg_id in reversed(matched_ids[-3:]):
         try:
-            await client.send_message(
-                chat_id=admin,
-                text=f"📥 **Log Channel ma navi file aavi!**\n\n🔗 **Share Link:**\n`{share_link}`"
+            await client.copy_message(
+                chat_id=message.chat.id,
+                from_chat_id=LOG_CHANNEL,
+                message_id=msg_id
             )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Error copying {msg_id}: {e}")
 
 async def main():
     await start_web_server()
     await app.start()
-    print("Bot ane Web Server chalu thai gaya che...")
+    print("Movie Link Search Bot chalu thai gayo che...")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
