@@ -12,7 +12,7 @@ API_ID = 29181523
 API_HASH = "ba9b8c523e7a8714785bb5480ace5089"
 BOT_TOKEN = "9094525892:AAEj2C4tFkUeJ36GaDzDK03sdio48iU_xqY"
 LOG_CHANNEL = -1004443842685
-ADMINS = [8723214887]
+ADMINS =
 
 DB_FILE = "movies_db.json"
 
@@ -54,7 +54,7 @@ async def start_web_server():
 async def start_cmd(client: Client, message: Message):
     await message.reply_text(
         "🎬 **Namaste! Movie Search Bot ma tamaru swagat che.**\n\n"
-        "Tamare je movie ni link joiti hoy tenu naam lakho (jem ke: `Jailer 2`), hu tarat j download link mokli aapis!"
+        "Tamare je movie ni link joiti hoy tenu naam lakho (jem ke: `Ramayana`), hu tarat j download link mokli aapis!"
     )
 
 # 2. Log Channel ma navi post aave etle save karva mate
