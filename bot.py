@@ -12,7 +12,7 @@ API_ID = 29181523
 API_HASH = "ba9b8c523e7a8714785bb5480ace5089"
 BOT_TOKEN = "9094525892:AAEj2C4tFkUeJ36GaDzDK03sdio48iU_xqY"
 LOG_CHANNEL = -1003957933627
-ADMINS =
+ADMINS = [8723214887]
 
 DB_FILE = "movies_db.json"
 
@@ -23,7 +23,7 @@ app = Client(
     bot_token=BOT_TOKEN
 )
 
-# Simple JSON Database (No MongoDB needed)
+# Simple JSON Database
 def load_db():
     if os.path.exists(DB_FILE):
         with open(DB_FILE, "r", encoding="utf-8") as f:
@@ -64,7 +64,6 @@ async def save_channel_post(client: Client, message: Message):
     if not text_content:
         return
 
-    # Duplicate check
     for item in movies_db:
         if item["msg_id"] == message.id:
             item["text"] = text_content.lower()
@@ -81,15 +80,18 @@ async def save_channel_post(client: Client, message: Message):
 # 3. Admin bot ne direct forward kare to pan Log Channel ma save kari le
 @app.on_message(filters.private & filters.user(ADMINS) & ~filters.command("start") & (filters.photo | filters.video | filters.document))
 async def admin_forward_post(client: Client, message: Message):
-    copied = await message.copy(chat_id=LOG_CHANNEL)
-    text_content = message.caption or message.text or ""
-    if text_content:
-        movies_db.append({
-            "msg_id": copied.id,
-            "text": text_content.lower()
-        })
-        save_db(movies_db)
-    await message.reply_text("✅ **Tamari movie post Log Channel ma save thai gai che!** Have koi pan user naam lakhshe to aa post mali jashe.")
+    try:
+        copied = await message.copy(chat_id=LOG_CHANNEL)
+        text_content = message.caption or message.text or ""
+        if text_content:
+            movies_db.append({
+                "msg_id": copied.id,
+                "text": text_content.lower()
+            })
+            save_db(movies_db)
+        await message.reply_text("✅ **Tamari movie post Log Channel ma save thai gai che!** Have koi pan user naam lakhshe to aa post mali jashe.")
+    except Exception as e:
+        await message.reply_text(f"❌ Error: `{e}`\n\n(Check karo ke Log Channel ma Bot Admin che ke nahi, ane channel ma ek message mokli ne fari try karo.)")
 
 # 4. User jyare movie nu naam lakhe tyare search karva mate
 @app.on_message(filters.private & filters.text & ~filters.command("start"))
@@ -108,7 +110,6 @@ async def search_movie(client: Client, message: Message):
         )
         return
 
-    # Latest 3 matching posts moklse
     for msg_id in reversed(matched_ids[-3:]):
         try:
             await client.copy_message(
@@ -122,6 +123,11 @@ async def search_movie(client: Client, message: Message):
 async def main():
     await start_web_server()
     await app.start()
+    try:
+        await app.get_chat(LOG_CHANNEL)
+        print("Log Channel connected successfully!")
+    except Exception as e:
+        print(f"Log Channel warning: {e}")
     print("Movie Link Search Bot chalu thai gayo che...")
     await asyncio.Event().wait()
 
