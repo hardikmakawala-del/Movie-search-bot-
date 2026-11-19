@@ -13,11 +13,13 @@ BOT_TOKEN = "9094525892:AAG4iOH12KHuJBLoekDBSfNtqPDxOrHjOPc"
 LOG_CHANNEL = -1004443842685
 ADMINS = [8723214887]
 
+# in_memory=True nakha thi session conflict kyarey nahi aave
 app = Client(
     "MovieLinkSearchBot",
     api_id=API_ID,
     api_hash=API_HASH,
-    bot_token=BOT_TOKEN
+    bot_token=BOT_TOKEN,
+    in_memory=True
 )
 
 movies_db = []
@@ -30,9 +32,10 @@ async def start_web_server():
     server.router.add_get("/", handle)
     runner = web.AppRunner(server)
     await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
+    print(f"Web server started on port {port}")
 
 async def index_old_posts():
     global movies_db
@@ -138,6 +141,7 @@ async def search_movie(client: Client, message: Message):
 async def main():
     await start_web_server()
     await app.start()
+    print("Pyrogram Client Started!")
     await index_old_posts()
     print("Bot ready for Group and Private!")
     await asyncio.Event().wait()
@@ -145,4 +149,4 @@ async def main():
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_until_complete(main())
-    
+                            
